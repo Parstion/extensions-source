@@ -31,41 +31,32 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     private val popularRequestHeaders = Headers.headersOf(
-        "authority",
-        "search.htv-services.com",
-        "accept",
-        "application/json, text/plain, */*",
-        "content-type",
-        "application/json;charset=UTF-8",
+        "authority", "search.htv-services.com",
+        "accept", "application/json, text/plain, */*",
+        "content-type", "application/json;charset=UTF-8",
     )
 
-    override fun popularAnimeRequest(page: Int): Request {
-        return POST(
-            "https://search.htv-services.com/",
-            popularRequestHeaders,
-            RequestBodyBuilder.searchRequestBody("", page, AnimeFilterList(), this),
-        )
-    }
+    override fun popularAnimeRequest(page: Int): Request = POST(
+        "https://search.htv-services.com/",
+        popularRequestHeaders,
+        RequestBodyBuilder.searchRequestBody("", page, AnimeFilterList(), this),
+    )
 
     override fun popularAnimeParse(response: Response) = ResponseParser.parseSearchJson(response, this)
 
-    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        return POST(
-            "https://search.htv-services.com/",
-            popularRequestHeaders,
-            RequestBodyBuilder.searchRequestBody(query, page, filters, this),
-        )
-    }
+    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request = POST(
+        "https://search.htv-services.com/",
+        popularRequestHeaders,
+        RequestBodyBuilder.searchRequestBody(query, page, filters, this),
+    )
 
     override fun searchAnimeParse(response: Response): AnimesPage = ResponseParser.parseSearchJson(response, this)
 
-    override fun latestUpdatesRequest(page: Int): Request {
-        return POST(
-            "https://search.htv-services.com/",
-            popularRequestHeaders,
-            RequestBodyBuilder.latestSearchRequestBody(page),
-        )
-    }
+    override fun latestUpdatesRequest(page: Int): Request = POST(
+        "https://search.htv-services.com/",
+        popularRequestHeaders,
+        RequestBodyBuilder.latestSearchRequestBody(page),
+    )
 
     override fun latestUpdatesParse(response: Response) = ResponseParser.parseSearchJson(response, this)
 
@@ -76,57 +67,47 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
         return GET("$baseUrl/api/v8/video?id=$slug")
     }
 
-    override fun episodeListParse(response: Response): List<SEpisode> = ResponseParser.parseEpisodeList(response, baseUrl)
+    override fun episodeListParse(response: Response): List<SEpisode> =
+        ResponseParser.parseEpisodeList(response, baseUrl)
 
     override fun videoListRequest(episode: SEpisode) = GET(episode.url)
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        val (authCookie, sessionToken, userLicense) = getFreshAuthCookies()
-        var videos = emptyList<Video>()
-
         val videoId = episode.url.substringAfter("?id=").substringBefore("&")
         val videoPageUrl = "$baseUrl/videos/hentai/$videoId"
 
-        // FIX: Pass the extension's shared `client` to JsExtractor so it has
-        // cookies and interceptors. The fork's bare OkHttpClient had neither.
-        val (signature, timestamp, _) = try {
-            JsExtractor.extractVideoData(videoPageUrl, client)
-        } catch (e: Exception) {
-            Triple("", 0L, "")
-        }
+        // Extract signature and timestamp directly from page HTML globals.
+        // window.ssignature and window.stime are injected into the page HTML,
+        // no external JS file fetching required.
+        val (signature, timestamp) = JsExtractor.extractSignatureAndTime(videoPageUrl, client)
 
-        if (signature.isNotEmpty() && timestamp > 0L) {
-            if (authCookie != null && sessionToken != null && userLicense != null) {
-                videos = try {
-                    VideoFetcher.fetchVideoListPremium(
-                        episode = episode,
-                        client = client,
-                        headers = headers,
-                        authCookie = authCookie,
-                        sessionToken = sessionToken,
-                        userLicense = userLicense,
-                        signature = signature,
-                        timestamp = timestamp,
-                        videoId = videoId,
-                    )
-                } catch (e: Exception) {
-                    emptyList()
-                }
-            }
+        if (signature.isEmpty() || timestamp == 0L) return emptyList()
 
-            if (videos.isEmpty()) {
-                videos = VideoFetcher.fetchVideoListGuest(
-                    episode = episode,
+        // Try premium first if logged in, fall back to guest
+        val (authCookie, sessionToken, userLicense) = getFreshAuthCookies()
+        if (authCookie != null && sessionToken != null && userLicense != null) {
+            val premiumVideos = try {
+                VideoFetcher.fetchVideoListPremium(
                     client = client,
-                    headers = headers,
+                    authCookie = authCookie,
+                    sessionToken = sessionToken,
+                    userLicense = userLicense,
                     signature = signature,
                     timestamp = timestamp,
                     videoId = videoId,
                 )
+            } catch (e: Exception) {
+                emptyList()
             }
+            if (premiumVideos.isNotEmpty()) return premiumVideos
         }
 
-        return videos
+        return VideoFetcher.fetchVideoListGuest(
+            client = client,
+            signature = signature,
+            timestamp = timestamp,
+            videoId = videoId,
+        )
     }
 
     private fun getFreshAuthCookies(): Triple<String?, String?, String?> {
@@ -139,15 +120,14 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
             authCookie = "${it.name}=${it.value}"
             sessionToken = it.value
         }
-
-        val licenseCookie = cookieList.firstOrNull { it.name == "x-user-license" }
-        if (licenseCookie != null) {
-            userLicense = licenseCookie.value
+        cookieList.firstOrNull { it.name == "x-user-license" }?.let {
+            userLicense = it.value
         }
 
         return Triple(authCookie, sessionToken, userLicense)
     }
 
+    // Not used — getVideoList handles everything directly
     override fun videoListParse(response: Response): List<Video> = emptyList()
 
     override fun List<Video>.sort(): List<Video> = VideoSorter.sortVideos(this, preferences)
@@ -168,7 +148,6 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
             entryValues = QUALITY_LIST
             setDefaultValue(PREF_QUALITY_DEFAULT)
             summary = "%s"
-
             setOnPreferenceChangeListener { _, newValue ->
                 val selected = newValue as String
                 val index = findIndexOfValue(selected)
