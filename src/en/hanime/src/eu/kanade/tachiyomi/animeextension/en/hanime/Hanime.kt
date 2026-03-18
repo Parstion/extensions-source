@@ -31,9 +31,12 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     private val popularRequestHeaders = Headers.headersOf(
-        "authority", "search.htv-services.com",
-        "accept", "application/json, text/plain, */*",
-        "content-type", "application/json;charset=UTF-8",
+        "authority",
+        "search.htv-services.com",
+        "accept",
+        "application/json, text/plain, */*",
+        "content-type",
+        "application/json;charset=UTF-8",
     )
 
     override fun popularAnimeRequest(page: Int): Request = POST(
