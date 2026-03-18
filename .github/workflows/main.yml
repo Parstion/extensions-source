@@ -23,8 +23,11 @@ jobs:
       - name: Build hanimetv APK
         run: ./gradlew assembleDebug -p src/en/hanime
 
+      - name: Find APK
+        run: find . -name "*.apk" -type f
+        
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: hanimetv-apk
-          path: src/en/hanimetv/build/outputs/apk/debug/*.apk
+          name: hanime-apk
+          path: "**/*.apk"
