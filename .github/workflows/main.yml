@@ -21,7 +21,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build hanimetv APK
-        run: ./gradlew assembleDebug -p src/en/hanimetv
+        run: ./gradlew assembleDebug -p src/en/hanime
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
