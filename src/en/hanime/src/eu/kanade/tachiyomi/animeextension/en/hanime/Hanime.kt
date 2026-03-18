@@ -86,10 +86,9 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
         val slug = apiResponse.parseAs<VideoModel>().hentaiVideo?.slug ?: videoId
         val videoPageUrl = "$baseUrl/videos/hentai/$slug"
 
-        // Extract signature and timestamp directly from page HTML globals.
-        // window.ssignature and window.stime are injected into the page HTML,
-        // no external JS file fetching required.
-        val (signature, timestamp) = JsExtractor.extractSignatureAndTime(videoPageUrl, client)
+        // Signature is set by the vhtv2 JS bundle after execution — not in raw HTML.
+        // WebViewExtractor loads the page in a real WebView and polls for the values.
+        val (signature, timestamp) = WebViewExtractor.extractSignatureAndTime(videoPageUrl)
 
         if (signature.isEmpty() || timestamp == 0L) return emptyList()
 
