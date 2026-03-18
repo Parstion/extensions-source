@@ -13,6 +13,7 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
+import eu.kanade.tachiyomi.util.parseAs
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
@@ -77,7 +78,13 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
         val videoId = episode.url.substringAfter("?id=").substringBefore("&")
-        val videoPageUrl = "$baseUrl/videos/hentai/$videoId"
+
+        // The API response contains the slug needed to build the correct page URL.
+        // hanime.tv uses slug-based URLs (e.g. /videos/hentai/nagachichi-nagai-san-3)
+        // not numeric IDs — window.ssignature is only present on the real slug page.
+        val apiResponse = client.newCall(GET(episode.url)).execute().body.string()
+        val slug = apiResponse.parseAs<VideoModel>().hentaiVideo?.slug ?: videoId
+        val videoPageUrl = "$baseUrl/videos/hentai/$slug"
 
         // Extract signature and timestamp directly from page HTML globals.
         // window.ssignature and window.stime are injected into the page HTML,
