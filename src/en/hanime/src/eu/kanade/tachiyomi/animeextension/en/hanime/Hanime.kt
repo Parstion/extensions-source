@@ -27,6 +27,16 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
     override val lang = "en"
     override val supportsLatest = true
 
+    // Cover images on hanime-cdn.com require a real browser User-Agent and
+    // Referer: https://hanime.tv/ — no cookies or auth needed. Without these,
+    // Aniyomi's CloudflareInterceptor incorrectly triggers and fails.
+    override fun headersBuilder() = super.headersBuilder()
+        .set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+        .set("Referer", "https://hanime.tv/")
+
     private val preferences: SharedPreferences by lazy {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
     }
