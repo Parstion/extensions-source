@@ -21,7 +21,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build hanimetv APK
-        run: ./gradlew assembleDebug -p src/zh/hanime1
+        run: ./gradlew assembleDebug -p src/en/hanime
 
       - name: Find APK
         run: find . -name "*.apk" -type f
