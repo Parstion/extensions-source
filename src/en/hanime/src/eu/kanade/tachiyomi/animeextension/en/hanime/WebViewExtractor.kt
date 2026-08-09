@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.SslErrorHandler
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -64,6 +65,17 @@ object WebViewExtractor {
             )
 
             webView.webViewClient = object : WebViewClient() {
+                // hanime.tv uses a certificate that Android WebView doesn't always trust.
+                // Without this, the page load is cancelled before JS executes and the
+                // HLS URL is never requested.
+                override fun onReceivedSslError(
+                    view: WebView,
+                    handler: SslErrorHandler,
+                    error: android.net.http.SslError,
+                ) {
+                    handler.proceed()
+                }
+
                 override fun onPageFinished(view: WebView, url: String) {
                     // Inject monitoring script to intercept window.fetch and XHR.
                     // Also simulate a click on the play button in case autoplay is blocked.
