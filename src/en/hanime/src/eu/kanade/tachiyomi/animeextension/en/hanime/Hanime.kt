@@ -12,6 +12,7 @@ import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.util.asJsoup
 import kotlinx.serialization.json.Json
 import okhttp3.Headers
 import okhttp3.Request
@@ -151,7 +152,7 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
             thumbnail_url = doc.selectFirst("meta[property=og:image]")?.attr("content")
             description = doc.selectFirst("meta[property=og:description]")?.attr("content")
             genre = doc.select("a[href*='/tags/']")
-                .mapNotNull { it.text().trim().takeIf { t -> t.isNotEmpty() } }
+                .mapNotNull { el -> el.text().trim().takeIf { it.isNotEmpty() } }
                 .joinToString()
             status = SAnime.COMPLETED
             initialized = true
