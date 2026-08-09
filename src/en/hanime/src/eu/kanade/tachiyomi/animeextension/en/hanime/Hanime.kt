@@ -93,10 +93,13 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
         val items = parseAndCache(response)
 
         val filtered = items.filter { item ->
-            if (query.isBlank()) true
-            else item.name.contains(query, ignoreCase = true) ||
-                item.tags.any { it.contains(query, ignoreCase = true) } ||
-                (item.brand?.contains(query, ignoreCase = true) == true)
+            if (query.isBlank()) {
+                true
+            } else {
+                item.name.contains(query, ignoreCase = true) ||
+                    item.tags.any { it.contains(query, ignoreCase = true) } ||
+                    (item.brand?.contains(query, ignoreCase = true) == true)
+            }
         }
 
         val sorted = filtered.sortedByDescending { it.releasedAtUnix ?: 0L }
