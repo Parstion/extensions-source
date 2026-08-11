@@ -12,10 +12,16 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.X509TrustManager
 
 data class HlsResult(
     val url: String,
@@ -28,13 +34,30 @@ object WebViewExtractor {
     private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-    // Injected into the page to capture the HLS URL.
-    // Deliberately does NOT check for "hanime.tv" in the URL — the player may use
-    // relative URLs ("/hls/id/token") which would fail a domain check.
+    // Trust-all OkHttp client used to fetch the video page HTML so we can
+    // inject our monitoring script before any of the page's own JS runs.
+    private val httpClient: OkHttpClient by lazy {
+        val trustAll = object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        }
+        val ssl = SSLContext.getInstance("TLS").also {
+            it.init(null, arrayOf(trustAll), SecureRandom())
+        }
+        OkHttpClient.Builder()
+            .sslSocketFactory(ssl.socketFactory, trustAll)
+            .hostnameVerifier { _, _ -> true }
+            .build()
+    }
+
+    // Injected into <head> BEFORE any page scripts.
+    // Since Astro bundles capture `window.fetch` as a local const at module parse
+    // time, overriding `window.fetch` in onPageFinished is too late — the bundle
+    // has already captured the original reference. By prepending this script into
+    // the raw HTML, our override is in place before any module executes.
     private val CAPTURE_SCRIPT = """
         (function() {
-            if (window.__hls_installed) { return; }
-            window.__hls_installed = true;
             window.__hls_captured = '';
             function capture(u) {
                 if (!u) return;
@@ -48,17 +71,17 @@ object WebViewExtractor {
                 capture(arguments[0]);
                 return origFetch.apply(this, arguments);
             };
-            var origOpen = XMLHttpRequest.prototype.open;
-            XMLHttpRequest.prototype.open = function(method, url) {
-                capture(url);
-                return origOpen.apply(this, arguments);
+            var OrigXHR = window.XMLHttpRequest;
+            window.XMLHttpRequest = function() {
+                var xhr = new OrigXHR();
+                var origOpen = xhr.open.bind(xhr);
+                xhr.open = function(m, url) {
+                    capture(url);
+                    return origOpen.apply(xhr, arguments);
+                };
+                return xhr;
             };
-            setTimeout(function() {
-                var els = document.querySelectorAll('video, button, [class*="play"], [aria-label*="lay"]');
-                for (var i = 0; i < els.length; i++) {
-                    try { els[i].click(); } catch(e) {}
-                }
-            }, 2000);
+            window.XMLHttpRequest.prototype = OrigXHR.prototype;
         })();
     """.trimIndent()
 
@@ -105,16 +128,79 @@ object WebViewExtractor {
                     handler.proceed()
                 }
 
-                override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
-                    Log.d(TAG, "onPageStarted: $url")
-                    // Inject early — before the page's own scripts execute
-                    view.evaluateJavascript(CAPTURE_SCRIPT, null)
+                override fun shouldInterceptRequest(
+                    view: WebView,
+                    request: WebResourceRequest,
+                ): WebResourceResponse? {
+                    val url = request.url.toString()
+
+                    // Catch HLS URL via shouldInterceptRequest (native <video> element)
+                    if (hlsUrl.isEmpty() && url.contains("/hls/")) {
+                        val full = if (url.startsWith("/")) "https://hanime.tv$url" else url
+                        Log.d(TAG, "shouldInterceptRequest caught HLS: $full")
+                        hlsUrl = full
+                        cookies = CookieManager.getInstance().getCookie("https://hanime.tv") ?: ""
+                        Handler(Looper.getMainLooper()).post { webView.destroy() }
+                        latch.countDown()
+                        return null
+                    }
+
+                    // Intercept the main video page HTML and inject our script before
+                    // any of the page's own JS bundles can capture window.fetch.
+                    if (url.contains("/videos/hentai/") && url.contains("hanime.tv")) {
+                        Log.d(TAG, "Intercepting main page HTML for injection: $url")
+                        val jar = CookieManager.getInstance().getCookie("https://hanime.tv") ?: ""
+                        return try {
+                            val response = httpClient.newCall(
+                                Request.Builder()
+                                    .url(url)
+                                    .addHeader("User-Agent", USER_AGENT)
+                                    .addHeader("Referer", "https://hanime.tv/")
+                                    .apply {
+                                        if (jar.isNotEmpty()) addHeader("Cookie", jar)
+                                    }
+                                    .build(),
+                            ).execute()
+
+                            val contentType = response.header("Content-Type") ?: "text/html"
+                            val html = response.body.string()
+                            Log.d(TAG, "Fetched HTML (${html.length} chars), injecting script")
+
+                            // Prepend our script as the very first thing inside <head>
+                            val injected = html.replaceFirst(
+                                Regex("(?i)<head[^>]*>"),
+                            ) { it.value + "\n<script>\n$CAPTURE_SCRIPT\n</script>" }
+
+                            WebResourceResponse(
+                                "text/html",
+                                "UTF-8",
+                                injected.byteInputStream(Charsets.UTF_8),
+                            )
+                        } catch (e: Exception) {
+                            Log.e(TAG, "HTML injection failed: ${e.message} — falling back")
+                            null
+                        }
+                    }
+
+                    return null
                 }
 
                 override fun onPageFinished(view: WebView, url: String) {
                     Log.d(TAG, "onPageFinished: $url")
-                    // Re-inject in case the page reset our overrides during hydration
+                    // Re-inject as fallback (if HTML injection was bypassed or failed)
                     view.evaluateJavascript(CAPTURE_SCRIPT, null)
+                    // Attempt to trigger player start
+                    view.evaluateJavascript(
+                        """
+                        setTimeout(function() {
+                            var els = document.querySelectorAll('video, button, [class*="play"], [aria-label]');
+                            for (var i = 0; i < els.length; i++) {
+                                try { els[i].click(); } catch(e) {}
+                            }
+                        }, 2000);
+                        """.trimIndent(),
+                        null,
+                    )
                     pollForHlsUrl(view, attempt = 0, maxAttempts = 45) { capturedUrl, jar ->
                         Log.d(TAG, "Poll captured: $capturedUrl")
                         hlsUrl = capturedUrl
@@ -122,26 +208,6 @@ object WebViewExtractor {
                         webView.destroy()
                         latch.countDown()
                     }
-                }
-
-                override fun shouldInterceptRequest(
-                    view: WebView,
-                    request: WebResourceRequest,
-                ): WebResourceResponse? {
-                    val url = request.url.toString()
-                    // Log all URLs for diagnostics — filter by /hls/ to avoid spam
-                    if (url.contains("/hls/") || url.contains("m3u8")) {
-                        Log.d(TAG, "shouldInterceptRequest: $url")
-                    }
-                    if (hlsUrl.isEmpty() && url.contains("/hls/")) {
-                        val full = if (url.startsWith("/")) "https://hanime.tv$url" else url
-                        Log.d(TAG, "shouldInterceptRequest captured HLS: $full")
-                        hlsUrl = full
-                        cookies = CookieManager.getInstance().getCookie("https://hanime.tv") ?: ""
-                        Handler(Looper.getMainLooper()).post { webView.destroy() }
-                        latch.countDown()
-                    }
-                    return null
                 }
             }
 
@@ -165,16 +231,27 @@ object WebViewExtractor {
             return
         }
 
-        view.evaluateJavascript("window.__hls_captured || ''") { value ->
+        // Multi-source check: our capture var, video element src, and window.store
+        val pollScript = """
+            (function() {
+                if (window.__hls_captured) return window.__hls_captured;
+                var v = document.querySelector('video');
+                if (v) {
+                    if (v.src && v.src.indexOf('/hls/') !== -1) return v.src;
+                    if (v.currentSrc && v.currentSrc.indexOf('/hls/') !== -1) return v.currentSrc;
+                }
+                return '';
+            })()
+        """.trimIndent()
+
+        view.evaluateJavascript(pollScript) { value ->
             val url = value?.trim('"') ?: ""
-            Log.d(TAG, "Poll attempt $attempt: captured='$url'")
+            if (attempt % 5 == 0) Log.d(TAG, "Poll attempt $attempt: '$url'")
             if (url.isNotEmpty() && url != "null" && url != "undefined") {
                 val full = if (url.startsWith("/")) "https://hanime.tv$url" else url
                 val jar = CookieManager.getInstance().getCookie("https://hanime.tv") ?: ""
                 onResult(full, jar)
             } else {
-                // Re-inject on every poll in case the Astro hydration reset our overrides
-                view.evaluateJavascript(CAPTURE_SCRIPT, null)
                 Handler(Looper.getMainLooper()).postDelayed(
                     { pollForHlsUrl(view, attempt + 1, maxAttempts, onResult) },
                     1000,
