@@ -171,7 +171,6 @@ object WebViewExtractor {
                                 Regex("(?i)<head[^>]*>"),
                                 "$0\n<script>\n$CAPTURE_SCRIPT\n</script>",
                             )
-                            
                             WebResourceResponse(
                                 "text/html",
                                 "UTF-8",
