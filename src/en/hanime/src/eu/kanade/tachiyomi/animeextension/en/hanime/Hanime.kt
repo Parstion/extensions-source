@@ -14,6 +14,11 @@ import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
 import kotlinx.serialization.json.Json
+import okhttp3.OkHttpClient
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import javax.net.ssl.SSLContext
+import javax.net.ssl.X509TrustManager
 import okhttp3.Headers
 import okhttp3.Request
 import okhttp3.Response
@@ -27,6 +32,25 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
     override val baseUrl = "https://hanime.tv"
     override val lang = "en"
     override val supportsLatest = true
+
+    // hanime.tv uses an SSL certificate that Android's OkHttp stack doesn't always
+    // trust. Without this, Aniyomi's WebViewInterceptor (Cloudflare handler) kicks in,
+    // fails with SSLHandshakeException, and the entire request chain aborts before
+    // getVideoList is ever reached.
+    private val trustAllCerts = object : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+        override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+    }
+
+    private val sslContext = SSLContext.getInstance("TLS").also {
+        it.init(null, arrayOf(trustAllCerts), SecureRandom())
+    }
+
+    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
+        .sslSocketFactory(sslContext.socketFactory, trustAllCerts)
+        .hostnameVerifier { _, _ -> true }
+        .build()
 
     private val searchApiUrl = "https://guest.freeanimehentai.net/api/v11/search_hvs"
 
@@ -160,27 +184,21 @@ class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     // ===== Episode List =====
-    // Each video on hanime.tv is a standalone entry — one episode per anime.
+    // Each video is standalone — one episode per anime. The slug is already in
+    // anime.url so we skip the HTTP request entirely to avoid OkHttp SSL issues.
 
-    override fun episodeListRequest(anime: SAnime): Request =
-        GET(baseUrl + anime.url, headers)
-
-    override fun episodeListParse(response: Response): List<SEpisode> {
+    override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
         return listOf(
             SEpisode.create().apply {
                 name = "Video"
                 episode_number = 1f
-                setUrlWithoutDomain(
-                    response.request.url.encodedPath +
-                        if (response.request.url.encodedQuery != null) {
-                            "?" + response.request.url.encodedQuery
-                        } else {
-                            ""
-                        },
-                )
+                setUrlWithoutDomain(anime.url)
             },
         )
     }
+
+    override fun episodeListRequest(anime: SAnime): Request = GET(baseUrl + anime.url)
+    override fun episodeListParse(response: Response): List<SEpisode> = emptyList()
 
     // ===== Video List =====
     // Load the video page in WebView, intercept the WASM-token-signed HLS URL,
