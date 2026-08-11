@@ -169,7 +169,8 @@ object WebViewExtractor {
                             // Prepend our script as the very first thing inside <head>
                             val injected = html.replaceFirst(
                                 Regex("(?i)<head[^>]*>"),
-                            ) { it.value + "\n<script>\n$CAPTURE_SCRIPT\n</script>" }
+                               "$0\n<script>\n$CAPTURE_SCRIPT\n</script>",
+                                )
 
                             WebResourceResponse(
                                 "text/html",
