@@ -36,7 +36,7 @@ object WebViewExtractor {
 
     // Trust-all OkHttp client used to fetch the video page HTML so we can
     // inject our monitoring script before any of the page's own JS runs.
-    private val HTTP_CLIENT: OkHttpClient by lazy {
+    private val httpClient: OkHttpClient by lazy {
         val trustAll = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
             override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
@@ -151,7 +151,7 @@ object WebViewExtractor {
                         Log.d(TAG, "Intercepting main page HTML for injection: $url")
                         val jar = CookieManager.getInstance().getCookie("https://hanime.tv") ?: ""
                         return try {
-                            val response = HTTP_CLIENT.newCall(
+                            val response = httpClient.newCall(
                                 Request.Builder()
                                     .url(url)
                                     .addHeader("User-Agent", USER_AGENT)
@@ -169,8 +169,8 @@ object WebViewExtractor {
                             // Prepend our script as the very first thing inside <head>
                             val injected = html.replaceFirst(
                                 Regex("(?i)<head[^>]*>"),
-                                "$0\n<script>\n$CAPTURE_SCRIPT\n</script>",
-                            )
+                            ) { it.value + "\n<script>\n$CAPTURE_SCRIPT\n</script>" }
+
                             WebResourceResponse(
                                 "text/html",
                                 "UTF-8",
