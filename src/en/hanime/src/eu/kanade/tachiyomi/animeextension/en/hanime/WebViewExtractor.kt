@@ -199,6 +199,37 @@ object WebViewExtractor {
                 ): WebResourceResponse? {
                     val url = request.url.toString()
 
+                    // Proxy hanime-cdn.com JS/WASM requests with proper Referer so the
+                    // Astro islands (including HTVPlayer) can hydrate. Without this,
+                    // the JS bundles fail to load and the player never mounts.
+                    if (url.contains("hanime-cdn.com") &&
+                        (url.endsWith(".js") || url.endsWith(".mjs") || url.endsWith(".wasm") || url.contains("/vhtv"))
+                    ) {
+                        Log.d(TAG, "Proxying CDN resource: $url")
+                        return try {
+                            val cdnResp = HTTP_CLIENT.newCall(
+                                Request.Builder()
+                                    .url(url)
+                                    .addHeader("User-Agent", USER_AGENT)
+                                    .addHeader("Referer", "https://hanime.tv/")
+                                    .addHeader("Origin", "https://hanime.tv")
+                                    .build(),
+                            ).execute()
+                            val contentType = cdnResp.header("Content-Type")
+                                ?: if (url.endsWith(".wasm")) "application/wasm" else "application/javascript"
+                            val bytes = cdnResp.body.bytes()
+                            Log.d(TAG, "CDN resource fetched: ${bytes.size} bytes")
+                            WebResourceResponse(
+                                contentType.split(";")[0].trim(),
+                                "UTF-8",
+                                bytes.inputStream(),
+                            )
+                        } catch (e: Exception) {
+                            Log.e(TAG, "CDN proxy failed: ${e.message}")
+                            null
+                        }
+                    }
+
                     // Catch HLS URL if it comes through as a native <video> src request
                     if (hlsUrl.isEmpty() && url.contains("/hls/") && url.contains("hanime")) {
                         Log.d(TAG, "shouldInterceptRequest HLS: $url")
