@@ -1,4 +1,4 @@
-package eu.kanade.tachiyomi.extension.en.hanime
+package eu.kanade.tachiyomi.animeextension.en.hanime
 
 import android.util.Base64
 import eu.kanade.tachiyomi.network.GET
@@ -39,19 +39,19 @@ class Hanime : HttpSource() {
 
     // ========== Cryptographic Handshake ==========
 
-    private val KEY_STRING = "htv-insecure-handshake-v1"
-    private val AAD_STRING = "htv-insecure-v1"
-    private val KEY_BYTES = MessageDigest.getInstance("SHA-256")
-        .digest(KEY_STRING.toByteArray(Charsets.UTF_8))
+    private val keyString = "htv-insecure-handshake-v1"
+    private val aadString = "htv-insecure-v1"
+    private val keyBytes = MessageDigest.getInstance("SHA-256")
+        .digest(keyString.toByteArray(Charsets.UTF_8))
 
     private fun encryptInsecureMessage(payload: Map<*, *>): String {
         val json = Json.encodeToString(payload)
         val data = json.toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val key = SecretKeySpec(KEY_BYTES, "AES")
+        val key = SecretKeySpec(keyBytes, "AES")
         val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, iv))
-        cipher.updateAAD(AAD_STRING.toByteArray(Charsets.UTF_8))
+        cipher.updateAAD(aadString.toByteArray(Charsets.UTF_8))
         val ciphertext = cipher.doFinal(data)
         val tag = ciphertext.takeLast(16).toByteArray()
         val encrypted = ciphertext.dropLast(16).toByteArray()
@@ -60,7 +60,7 @@ class Hanime : HttpSource() {
             "alg" to "AES-256-GCM",
             "iv" to base64UrlEncode(iv),
             "tag" to base64UrlEncode(tag),
-            "data" to base64UrlEncode(encrypted)
+            "data" to base64UrlEncode(encrypted),
         )
         val jsonString = Json.encodeToString(obj)
         return base64UrlEncode(jsonString.toByteArray(Charsets.UTF_8))
@@ -73,9 +73,9 @@ class Hanime : HttpSource() {
         val tag = base64UrlDecode(obj["tag"]!!.jsonPrimitive.content)
         val encrypted = base64UrlDecode(obj["data"]!!.jsonPrimitive.content)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val key = SecretKeySpec(KEY_BYTES, "AES")
+        val key = SecretKeySpec(keyBytes, "AES")
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
-        cipher.updateAAD(AAD_STRING.toByteArray(Charsets.UTF_8))
+        cipher.updateAAD(aadString.toByteArray(Charsets.UTF_8))
         val full = encrypted + tag
         val decrypted = cipher.doFinal(full)
         return String(decrypted, Charsets.UTF_8)
@@ -92,7 +92,7 @@ class Hanime : HttpSource() {
         val payload = mapOf(
             "timestamp_unix" to timestamp,
             "directive" to "htv_player_handshake",
-            "slug" to slug
+            "slug" to slug,
         )
         val token = encryptInsecureMessage(payload)
         val body = mapOf("token" to token)
@@ -192,11 +192,13 @@ class Hanime : HttpSource() {
 
     override fun getChapterList(manga: SManga): List<SChapter> {
         val slug = manga.initialChapter ?: manga.url.substringAfterLast("/")
-        return listOf(SChapter.create().apply {
-            name = manga.title
-            url = manga.url
-            scanlator = slug // store slug for later use
-        })
+        return listOf(
+            SChapter.create().apply {
+                name = manga.title
+                url = manga.url
+                scanlator = slug // store slug for later use
+            }
+        )
     }
 
     override fun getPageList(chapter: SChapter): List<Page> {
