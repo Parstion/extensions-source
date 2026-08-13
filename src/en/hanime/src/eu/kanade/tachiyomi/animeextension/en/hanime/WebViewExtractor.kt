@@ -154,19 +154,45 @@ object WebViewExtractor {
 
                 override fun onPageFinished(view: WebView, url: String) {
                     Log.d(TAG, "onPageFinished: $url")
+                    // Check DOM and Astro island state
                     view.evaluateJavascript(
                         """
                         (function() {
+                            var islands = document.querySelectorAll('astro-island');
                             var btns = Array.from(document.querySelectorAll('button'))
                                 .map(function(b) { return b.textContent.trim().substring(0,30) + '|' + (b.getAttribute('aria-controls')||''); });
                             return JSON.stringify({
                                 hasVideo: !!document.querySelector('video'),
                                 hasQualityBtn: !!document.querySelector('button[aria-controls="HTVPlayerQualityPopover"]'),
-                                buttons: btns.slice(0, 15)
+                                astroIslands: islands.length,
+                                islandUrls: Array.from(islands).map(function(i) { return i.getAttribute('component-url') || '?'; }),
+                                buttons: btns.slice(0, 10)
                             });
                         })()
                         """.trimIndent(),
                     ) { r -> Log.d(TAG, "DOM: $r") }
+                    // Monitor ALL JavaScript-initiated fetch/XHR to see what's being requested
+                    view.evaluateJavascript(
+                        """
+                        (function() {
+                            if (window.__monitor_installed) return;
+                            window.__monitor_installed = true;
+                            var origFetch = window.fetch;
+                            window.fetch = function() {
+                                var u = (typeof arguments[0] === 'string') ? arguments[0] : ((arguments[0] && arguments[0].url) || '');
+                                if (u) AndroidHls.log('fetch:' + u.substring(0, 120));
+                                if (u && u.indexOf('/hls/') !== -1) { window.__hls_captured = u; try { AndroidHls.onHlsUrl(u); } catch(e) {} }
+                                return origFetch.apply(this, arguments);
+                            };
+                            var origOpen = XMLHttpRequest.prototype.open;
+                            XMLHttpRequest.prototype.open = function(m, url) {
+                                if (url) AndroidHls.log('xhr:' + url.toString().substring(0, 120));
+                                return origOpen.apply(this, arguments);
+                            };
+                        })();
+                        """.trimIndent(),
+                        null,
+                    )
                     view.evaluateJavascript(CLICK_CHAIN_SCRIPT, null)
                     pollForHlsUrl(view, attempt = 0, maxAttempts = 55)
                 }
