@@ -199,6 +199,13 @@ object WebViewExtractor {
                 ): WebResourceResponse? {
                     val url = request.url.toString()
 
+                    // Log ALL CDN requests to see what's being requested vs proxied
+                    if (url.contains("hanime-cdn.com")) {
+                        val isProxied = url.endsWith(".js") || url.endsWith(".mjs") ||
+                            url.endsWith(".wasm") || url.contains("/vhtv")
+                        Log.d(TAG, "CDN: $url [proxied=$isProxied]")
+                    }
+
                     // Proxy hanime-cdn.com JS/WASM requests with proper Referer so the
                     // Astro islands (including HTVPlayer) can hydrate. Without this,
                     // the JS bundles fail to load and the player never mounts.
@@ -255,6 +262,7 @@ object WebViewExtractor {
                             ).execute()
                             val html = resp.body.string()
                             Log.d(TAG, "Got HTML: ${html.length} chars")
+                            Log.d(TAG, "HTML head: ${html.substring(0, minOf(2000, html.length))}")
                             val headTag = Regex("(?i)<head[^>]*>").find(html)
                             val injected = if (headTag != null) {
                                 buildString {
@@ -331,6 +339,22 @@ object WebViewExtractor {
         view.evaluateJavascript(script) { value ->
             val url = value?.trim('"') ?: ""
             if (attempt % 5 == 0) Log.d(TAG, "Poll $attempt: '$url'")
+            // Extra DOM check at T+15s to see if player hydrated after onPageFinished
+            if (attempt == 15) {
+                view.evaluateJavascript(
+                    """
+                    (function() {
+                        var btns = Array.from(document.querySelectorAll('button'))
+                            .map(function(b) { return b.textContent.trim().substring(0,30)+'|'+(b.getAttribute('aria-controls')||''); });
+                        return JSON.stringify({
+                            hasVideo: !!document.querySelector('video'),
+                            hasQualityBtn: !!document.querySelector('button[aria-controls="HTVPlayerQualityPopover"]'),
+                            buttons: btns.slice(0, 15)
+                        });
+                    })()
+                    """.trimIndent(),
+                ) { r -> Log.d(TAG, "DOM at T+15s: $r") }
+            }
             if (url.isNotEmpty() && url != "null" && url != "undefined") {
                 val full = if (url.startsWith("/")) "https://hanime.tv$url" else url
                 Log.d(TAG, "Poll captured: $full")
