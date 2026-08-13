@@ -137,11 +137,15 @@ object WebViewExtractor {
                     request: WebResourceRequest,
                 ): WebResourceResponse? {
                     val url = request.url.toString()
-                    // Log CDN requests for diagnostics
+                    // Log CDN non-image requests
                     if (url.contains("hanime-cdn.com") && !url.contains("/images/") && !url.contains("/fonts/")) {
                         Log.d(TAG, "CDN non-image: $url")
                     }
-                    // Catch HLS URL from native <video>.src change (triggered by quality change)
+                    // Log _astro resource requests to see if they go through shouldInterceptRequest
+                    if (url.contains("/_astro/")) {
+                        Log.d(TAG, "Astro resource: $url")
+                    }
+                    // Catch HLS URL from native <video>.src change
                     if (hlsUrl.isEmpty() && url.contains("/hls/") && url.contains("hanime")) {
                         Log.d(TAG, "HLS intercepted: $url")
                         hlsUrl = if (url.startsWith("/")) "https://hanime.tv$url" else url
@@ -171,8 +175,31 @@ object WebViewExtractor {
                         })()
                         """.trimIndent(),
                     ) { r -> Log.d(TAG, "DOM: $r") }
-                    // Monitor ALL JavaScript-initiated fetch/XHR to see what's being requested
+                    // Monitor window.wasmReady promise status and find WASM script content
                     view.evaluateJavascript(
+                        """
+                        (function() {
+                            // Find and log the wasmReady script source
+                            var scripts = document.querySelectorAll('script');
+                            for (var i = 0; i < scripts.length; i++) {
+                                var t = scripts[i].textContent || '';
+                                if (t.indexOf('wasmReady') !== -1 && t.length < 10000) {
+                                    AndroidHls.log('wasmScript:' + t.substring(0, 500));
+                                }
+                            }
+                            // Monitor promise resolution
+                            if (window.wasmReady) {
+                                AndroidHls.log('wasmReady exists, monitoring');
+                                window.wasmReady
+                                    .then(function() { AndroidHls.log('WASM resolved OK'); })
+                                    .catch(function(e) { AndroidHls.log('WASM rejected: ' + e.toString()); });
+                            } else {
+                                AndroidHls.log('wasmReady not defined');
+                            }
+                        })();
+                        """.trimIndent(),
+                        null,
+                    )
                         """
                         (function() {
                             if (window.__monitor_installed) return;
