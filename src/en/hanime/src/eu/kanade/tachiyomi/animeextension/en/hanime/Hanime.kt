@@ -1,20 +1,20 @@
 package eu.kanade.tachiyomi.animeextension.en.hanime
 
 import android.util.Base64
-import eu.kanade.tachiyomi.animesource.model.FilterList
-import eu.kanade.tachiyomi.animesource.model.Page
-import eu.kanade.tachiyomi.animesource.model.SChapter
-import eu.kanade.tachiyomi.animesource.model.SManga
-import eu.kanade.tachiyomi.animesource.online.HttpSource
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.network.GET
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.MediaType
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.security.MessageDigest
@@ -31,7 +31,8 @@ class Hanime : HttpSource() {
     override val baseUrl: String = "https://hanime.tv"
     override val supportsLatest: Boolean = true
 
-    private val client: OkHttpClient = network.client.newBuilder()
+    // Use the inherited OkHttp client from HttpSource
+    private val httpClient: OkHttpClient = client.newBuilder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
@@ -43,12 +44,8 @@ class Hanime : HttpSource() {
     private val keyBytes = MessageDigest.getInstance("SHA-256")
         .digest(keyString.toByteArray(Charsets.UTF_8))
 
-    // Helper to encode any object as JSON safely
-    private inline fun <reified T> encodeToJson(value: T): String =
-        Json.encodeToString(value)
-
-    private fun encryptInsecureMessage(payload: Map<*, *>): String {
-        val json = encodeToJson(payload)
+    private fun encryptInsecureMessage(payload: Map<String, Any>): String {
+        val json = Json.encodeToString(payload)
         val data = json.toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         val key = SecretKeySpec(keyBytes, "AES")
@@ -65,7 +62,7 @@ class Hanime : HttpSource() {
             "tag" to base64UrlEncode(tag),
             "data" to base64UrlEncode(encrypted),
         )
-        val jsonString = encodeToJson(obj)
+        val jsonString = Json.encodeToString(obj)
         return base64UrlEncode(jsonString.toByteArray(Charsets.UTF_8))
     }
 
@@ -99,16 +96,16 @@ class Hanime : HttpSource() {
         )
         val token = encryptInsecureMessage(payload)
         val body = mapOf("token" to token)
-        val jsonBody = encodeToJson(body)
+        val jsonBody = Json.encodeToString(body)
         val request = Request.Builder()
             .url("https://auth.hanime.tv/api/v11/handshake")
-            .post(RequestBody.create(MediaType.parse("application/json"), jsonBody))
+            .post(jsonBody.toRequestBody("application/json".toMediaType()))
             .header("x-signature-version", "web2")
             .header("x-csrf-token", "null")
             .header("x-time", timestamp.toString())
             .build()
 
-        val response = client.newCall(request).execute()
+        val response = httpClient.newCall(request).execute()
         if (!response.isSuccessful) throw Exception("Handshake failed: ${response.code}")
         val xToken = response.header("x-token") ?: throw Exception("Missing x-token")
         response.close()
@@ -157,7 +154,7 @@ class Hanime : HttpSource() {
 
     override fun getMangaList(page: Int): List<SManga> {
         val url = "$baseUrl/search?order=created_at_desc&page=$page"
-        val doc = client.newCall(GET(url)).execute().use { response ->
+        val doc = httpClient.newCall(GET(url)).execute().use { response ->
             Jsoup.parse(response.body!!.string())
         }
         return parseSearchResults(doc)
@@ -169,7 +166,7 @@ class Hanime : HttpSource() {
 
     override fun getPopularManga(page: Int): List<SManga> {
         val url = "$baseUrl/browse/trending?page=$page"
-        val doc = client.newCall(GET(url)).execute().use { response ->
+        val doc = httpClient.newCall(GET(url)).execute().use { response ->
             Jsoup.parse(response.body!!.string())
         }
         return parseSearchResults(doc)
@@ -177,7 +174,7 @@ class Hanime : HttpSource() {
 
     override fun searchManga(query: String, page: Int, filters: FilterList): List<SManga> {
         val url = "$baseUrl/search?q=${query.replace(" ", "+")}&page=$page"
-        val doc = client.newCall(GET(url)).execute().use { response ->
+        val doc = httpClient.newCall(GET(url)).execute().use { response ->
             Jsoup.parse(response.body!!.string())
         }
         return parseSearchResults(doc)
