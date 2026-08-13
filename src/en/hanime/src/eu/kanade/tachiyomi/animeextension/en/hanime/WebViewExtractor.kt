@@ -100,29 +100,33 @@ object WebViewExtractor {
                 }
                 return false;
             }
-            // Step 1: Dismiss ad interstitial
+            // Step 1: Dismiss ad interstitial (T+4s)
             setTimeout(function() {
-                clickByText('Continue to Video') || clickByText('Continue') || clickByText('Skip');
+                var r1 = clickByText('Continue to Video') || clickByText('Continue') || clickByText('Skip');
                 clickIf('[class*="continue"]') || clickIf('[class*="skip"]');
-            }, 2000);
-            // Step 2: Click play button
+                AndroidHls.log('Step1 continue clicked=' + r1);
+            }, 4000);
+            // Step 2: Click play button (T+8s)
             setTimeout(function() {
-                clickIf('button[aria-label*="Play"]') ||
+                var r2 = clickIf('button[aria-label*="Play"]') ||
                 clickIf('button[aria-label*="play"]') ||
                 clickIf('[class*="play-btn"]') ||
                 clickIf('[class*="PlayButton"]') ||
                 clickIf('video');
-            }, 5000);
-            // Step 3: Open quality selector
+                AndroidHls.log('Step2 play clicked=' + r2);
+            }, 8000);
+            // Step 3: Open quality selector (T+12s)
             setTimeout(function() {
-                clickIf('button[aria-controls="HTVPlayerQualityPopover"]') ||
+                var r3 = clickIf('button[aria-controls="HTVPlayerQualityPopover"]') ||
                 clickIf('[aria-label="Stream quality"]') ||
                 clickIf('[class*="quality"]');
-            }, 8000);
-            // Step 4: Click a quality option (prefer 720p, fallback to first available)
+                AndroidHls.log('Step3 quality btn clicked=' + r3);
+            }, 12000);
+            // Step 4: Click quality option (T+13.5s)
             setTimeout(function() {
                 var popover = document.getElementById('HTVPlayerQualityPopover');
                 var clicked = false;
+                AndroidHls.log('Step4 popover=' + !!popover);
                 if (popover) {
                     var opts = popover.querySelectorAll('button, li, [role="option"], [class*="quality"]');
                     for (var i = 0; i < opts.length; i++) {
@@ -131,11 +135,12 @@ object WebViewExtractor {
                             opts[i].click(); clicked = true; break;
                         }
                     }
-                    if (!clicked && opts.length > 0) { opts[0].click(); }
+                    if (!clicked && opts.length > 0) { opts[0].click(); clicked = true; }
                 } else {
-                    clickByText('720p') || clickByText('480p') || clickByText('360p');
+                    clicked = clickByText('720p') || clickByText('480p') || clickByText('360p');
                 }
-            }, 9500);
+                AndroidHls.log('Step4 quality option clicked=' + clicked);
+            }, 13500);
         })();
     """.trimIndent()
 
@@ -167,6 +172,11 @@ object WebViewExtractor {
                         cookies = CookieManager.getInstance().getCookie("https://hanime.tv") ?: ""
                         Handler(Looper.getMainLooper()).post { webView.destroy() }
                         latch.countDown()
+                    }
+
+                    @JavascriptInterface
+                    fun log(msg: String) {
+                        Log.d(TAG, "JS: $msg")
                     }
                 },
                 "AndroidHls",
@@ -238,10 +248,28 @@ object WebViewExtractor {
 
                 override fun onPageFinished(view: WebView, url: String) {
                     Log.d(TAG, "onPageFinished: $url")
-                    // Re-inject capture script as fallback + start the click chain
+                    // Dump DOM state so we can see what the page looks like
+                    view.evaluateJavascript(
+                        """
+                        (function() {
+                            var btns = Array.from(document.querySelectorAll('button'))
+                                .map(function(b) { return (b.textContent.trim().substring(0,30) + '|' + b.className.substring(0,40) + '|' + (b.getAttribute('aria-controls')||'')); });
+                            return JSON.stringify({
+                                title: document.title,
+                                url: location.href,
+                                bodyLen: document.body ? document.body.innerHTML.length : 0,
+                                hasVideo: !!document.querySelector('video'),
+                                hasQualityBtn: !!document.querySelector('button[aria-controls="HTVPlayerQualityPopover"]'),
+                                hlsInstalled: !!window.__hls_installed,
+                                buttons: btns.slice(0, 20)
+                            });
+                        })()
+                        """.trimIndent(),
+                    ) { result -> Log.d(TAG, "DOM state: $result") }
+
+                    // Re-inject capture script + start click chain with generous delays
                     view.evaluateJavascript(CAPTURE_SCRIPT, null)
                     view.evaluateJavascript(CLICK_CHAIN_SCRIPT, null)
-                    // Poll for HLS URL via video element src as additional catch
                     pollForHlsUrl(view, attempt = 0, maxAttempts = 50)
                 }
             }
