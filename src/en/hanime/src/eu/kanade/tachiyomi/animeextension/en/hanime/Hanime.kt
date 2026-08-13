@@ -2,11 +2,12 @@ package eu.kanade.tachiyomi.animeextension.en.hanime
 
 import android.util.Base64
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.FilterList
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -23,6 +24,32 @@ import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
+
+// Data classes for handshake
+@Serializable
+private data class HandshakePayload(
+    val timestamp_unix: Long,
+    val directive: String,
+    val slug: String,
+)
+
+@Serializable
+private data class HandshakeTokenRequest(
+    val token: String,
+)
+
+@Serializable
+private data class HandshakeResponse(
+    val sources: List<Source>?,
+)
+
+@Serializable
+private data class Source(
+    val src: String,
+    val height: Int?,
+    val label: String?,
+    val kind: String?,
+)
 
 class Hanime : HttpSource() {
     override val id: Long = 1234567890L // Change to a unique ID
@@ -43,7 +70,7 @@ class Hanime : HttpSource() {
     private val keyBytes = MessageDigest.getInstance("SHA-256")
         .digest(keyString.toByteArray(Charsets.UTF_8))
 
-    private fun encryptInsecureMessage(payload: Map<*, *>): String {
+    private fun encryptInsecureMessage(payload: HandshakePayload): String {
         val json = Json.encodeToString(payload)
         val data = json.toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -67,10 +94,10 @@ class Hanime : HttpSource() {
 
     private fun decryptInsecureMessage(token: String): String {
         val jsonString = String(base64UrlDecode(token), Charsets.UTF_8)
-        val obj = Json.parseToJsonElement(jsonString).jsonObject
-        val iv = base64UrlDecode(obj["iv"]!!.jsonPrimitive.content)
-        val tag = base64UrlDecode(obj["tag"]!!.jsonPrimitive.content)
-        val encrypted = base64UrlDecode(obj["data"]!!.jsonPrimitive.content)
+        val obj = Json.decodeFromString<Map<String, String>>(jsonString) // Or use Json.parseToJsonElement
+        val iv = base64UrlDecode(obj["iv"]!!)
+        val tag = base64UrlDecode(obj["tag"]!!)
+        val encrypted = base64UrlDecode(obj["data"]!!)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         val key = SecretKeySpec(keyBytes, "AES")
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
@@ -88,14 +115,14 @@ class Hanime : HttpSource() {
 
     private fun extractVideoSource(slug: String): String {
         val timestamp = System.currentTimeMillis() / 1000
-        val payload = mapOf(
-            "timestamp_unix" to timestamp,
-            "directive" to "htv_player_handshake",
-            "slug" to slug,
+        val payload = HandshakePayload(
+            timestamp_unix = timestamp,
+            directive = "htv_player_handshake",
+            slug = slug,
         )
         val token = encryptInsecureMessage(payload)
-        val body = mapOf("token" to token)
-        val jsonBody = Json.encodeToString(body)
+        val requestBody = HandshakeTokenRequest(token = token)
+        val jsonBody = Json.encodeToString(requestBody)
         val request = Request.Builder()
             .url("https://auth.hanime.tv/api/v11/handshake")
             .post(jsonBody.toRequestBody("application/json".toMediaType()))
@@ -110,22 +137,18 @@ class Hanime : HttpSource() {
         response.close()
 
         val decryptedJson = decryptInsecureMessage(xToken)
-        val json = Json.parseToJsonElement(decryptedJson).jsonObject
-        val sourcesArray = json["sources"]?.jsonArray ?: throw Exception("No sources in response")
+        val handshakeResponse = Json.decodeFromString<HandshakeResponse>(decryptedJson)
+        val sources = handshakeResponse.sources ?: throw Exception("No sources in response")
 
-        val realSources = sourcesArray.filter {
-            it.jsonObject["kind"]?.jsonPrimitive?.content != "promotion"
-        }
+        val realSources = sources.filter { it.kind != "promotion" }
 
         if (realSources.isEmpty()) throw Exception("No playable sources found")
 
         // Pick highest quality by height
-        val best = realSources.maxByOrNull {
-            it.jsonObject["height"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
-        } ?: throw Exception("No valid source")
+        val best = realSources.maxByOrNull { it.height ?: 0 }
+            ?: throw Exception("No valid source")
 
-        return best.jsonObject["src"]?.jsonPrimitive?.content
-            ?: throw Exception("Missing src")
+        return best.src
     }
 
     // ========== Parsing Helper ==========
