@@ -1,264 +1,212 @@
-package eu.kanade.tachiyomi.animeextension.en.hanime
+package eu.kanade.tachiyomi.extension.en.hanime
 
-import android.app.Application
-import android.content.SharedPreferences
-import androidx.preference.ListPreference
-import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
-import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
-import eu.kanade.tachiyomi.animesource.model.AnimesPage
-import eu.kanade.tachiyomi.animesource.model.SAnime
-import eu.kanade.tachiyomi.animesource.model.SEpisode
-import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
+import android.util.Base64
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.util.asJsoup
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.serialization.json.Json
-import okhttp3.Headers
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.Response
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
-import uy.kohesive.injekt.injectLazy
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
+import java.security.MessageDigest
 import java.security.SecureRandom
-import java.security.cert.X509Certificate
-import javax.net.ssl.SSLContext
-import javax.net.ssl.X509TrustManager
+import java.util.concurrent.TimeUnit
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
-class Hanime : ConfigurableAnimeSource, AnimeHttpSource() {
+class Hanime : HttpSource() {
+    override val id: Long = 1234567890L // Change to a unique ID
+    override val name: String = "hanime.tv"
+    override val lang: String = "en"
+    override val baseUrl: String = "https://hanime.tv"
+    override val supportsLatest: Boolean = true
 
-    override val name = "hanime.tv"
-    override val baseUrl = "https://hanime.tv"
-    override val lang = "en"
-    override val supportsLatest = true
-
-    // hanime.tv uses an SSL certificate that Android's OkHttp stack doesn't always
-    // trust. Without this, Aniyomi's WebViewInterceptor (Cloudflare handler) kicks in,
-    // fails with SSLHandshakeException, and the entire request chain aborts before
-    // getVideoList is ever reached.
-    private val trustAllCerts = object : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
-        override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
-        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
-    }
-
-    private val sslContext = SSLContext.getInstance("TLS").also {
-        it.init(null, arrayOf(trustAllCerts), SecureRandom())
-    }
-
-    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
-        .sslSocketFactory(sslContext.socketFactory, trustAllCerts)
-        .hostnameVerifier { _, _ -> true }
+    private val client: OkHttpClient = network.client.newBuilder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    private val searchApiUrl = "https://guest.freeanimehentai.net/api/v11/search_hvs"
+    // ========== Cryptographic Handshake ==========
 
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val KEY_STRING = "htv-insecure-handshake-v1"
+    private val AAD_STRING = "htv-insecure-v1"
+    private val KEY_BYTES = MessageDigest.getInstance("SHA-256")
+        .digest(KEY_STRING.toByteArray(Charsets.UTF_8))
 
-    private val json: Json by injectLazy()
-
-    // The search API returns the full library as a flat array — we cache it and
-    // paginate locally to avoid hammering the API on every page flip.
-    private var cachedVideos: List<SearchItem> = emptyList()
-    private var cacheTimestamp = 0L
-    private val cacheTtlMs = 10 * 60 * 1000L // 10 minutes
-
-    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
-        .add(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    private fun encryptInsecureMessage(payload: Map<*, *>): String {
+        val json = Json.encodeToString(payload)
+        val data = json.toByteArray(Charsets.UTF_8)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val key = SecretKeySpec(KEY_BYTES, "AES")
+        val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, iv))
+        cipher.updateAAD(AAD_STRING.toByteArray(Charsets.UTF_8))
+        val ciphertext = cipher.doFinal(data)
+        val tag = ciphertext.takeLast(16).toByteArray()
+        val encrypted = ciphertext.dropLast(16).toByteArray()
+        val obj = mapOf(
+            "v" to 1,
+            "alg" to "AES-256-GCM",
+            "iv" to base64UrlEncode(iv),
+            "tag" to base64UrlEncode(tag),
+            "data" to base64UrlEncode(encrypted)
         )
-        .add("Referer", "$baseUrl/")
-
-    // ===== Popular =====
-    // Sorted by views descending, served as paginated slices of the local cache
-
-    override fun popularAnimeRequest(page: Int): Request =
-        GET(searchApiUrl, headers)
-
-    override fun popularAnimeParse(response: Response): AnimesPage {
-        val items = parseAndCache(response)
-        val sorted = items.sortedByDescending { it.views ?: 0L }
-        return paginateLocally(sorted, page = 1)
+        val jsonString = Json.encodeToString(obj)
+        return base64UrlEncode(jsonString.toByteArray(Charsets.UTF_8))
     }
 
-    // ===== Latest =====
-    // Sorted by released_at_unix descending
-
-    override fun latestUpdatesRequest(page: Int): Request =
-        GET(searchApiUrl, headers)
-
-    override fun latestUpdatesParse(response: Response): AnimesPage {
-        val items = parseAndCache(response)
-        val sorted = items.sortedByDescending { it.releasedAtUnix ?: 0L }
-        return paginateLocally(sorted, page = 1)
+    private fun decryptInsecureMessage(token: String): String {
+        val jsonString = String(base64UrlDecode(token), Charsets.UTF_8)
+        val obj = Json.parseToJsonElement(jsonString).jsonObject
+        val iv = base64UrlDecode(obj["iv"]!!.jsonPrimitive.content)
+        val tag = base64UrlDecode(obj["tag"]!!.jsonPrimitive.content)
+        val encrypted = base64UrlDecode(obj["data"]!!.jsonPrimitive.content)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val key = SecretKeySpec(KEY_BYTES, "AES")
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+        cipher.updateAAD(AAD_STRING.toByteArray(Charsets.UTF_8))
+        val full = encrypted + tag
+        val decrypted = cipher.doFinal(full)
+        return String(decrypted, Charsets.UTF_8)
     }
 
-    // ===== Search =====
-    // Text search and filters are applied locally against the cached library
+    private fun base64UrlEncode(data: ByteArray): String =
+        Base64.encodeToString(data, Base64.URL_SAFE or Base64.NO_WRAP)
 
-    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request =
-        GET(searchApiUrl, headers)
+    private fun base64UrlDecode(str: String): ByteArray =
+        Base64.decode(str, Base64.URL_SAFE)
 
-    override fun searchAnimeParse(response: Response): AnimesPage {
-        val items = parseAndCache(response)
-        // Will be filtered in searchAnimeParse — but Aniyomi calls this with the page
-        // already embedded. We re-filter here using the last query via anime URL hack,
-        // but since Aniyomi passes query separately we filter by name match.
-        return paginateLocally(items, page = 1)
-    }
-
-    // Override to apply query filtering before pagination
-    override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage {
-        val response = client.newCall(searchAnimeRequest(page, query, filters)).execute()
-        val items = parseAndCache(response)
-
-        val filtered = items.filter { item ->
-            if (query.isBlank()) {
-                true
-            } else {
-                item.name.contains(query, ignoreCase = true) ||
-                    item.tags.any { it.contains(query, ignoreCase = true) } ||
-                    (item.brand?.contains(query, ignoreCase = true) == true)
-            }
-        }
-
-        val sorted = filtered.sortedByDescending { it.releasedAtUnix ?: 0L }
-        return paginateLocally(sorted, page)
-    }
-
-    private fun parseAndCache(response: Response): List<SearchItem> {
-        val now = System.currentTimeMillis()
-        if (cachedVideos.isNotEmpty() && (now - cacheTimestamp) < cacheTtlMs) {
-            return cachedVideos
-        }
-        val items = json.decodeFromString<List<SearchItem>>(response.body.string())
-        cachedVideos = items
-        cacheTimestamp = now
-        return items
-    }
-
-    private fun paginateLocally(items: List<SearchItem>, page: Int): AnimesPage {
-        val fromIndex = (page - 1) * PAGE_SIZE
-        if (fromIndex >= items.size) return AnimesPage(emptyList(), false)
-        val toIndex = minOf(fromIndex + PAGE_SIZE, items.size)
-        val animes = items.subList(fromIndex, toIndex).map { it.toSAnime() }
-        return AnimesPage(animes, toIndex < items.size)
-    }
-
-    private fun SearchItem.toSAnime(): SAnime = SAnime.create().apply {
-        setUrlWithoutDomain("/videos/hentai/$slug")
-        title = name
-        thumbnail_url = coverUrl
-        author = brand
-        genre = tags.joinToString()
-        description = this@toSAnime.description
-        status = SAnime.COMPLETED
-        // All data is already here — skip animeDetailsParse
-        initialized = true
-    }
-
-    // ===== Anime Details =====
-    // Only called if initialized = false or on manual refresh.
-    // We parse the video page HTML as fallback.
-
-    override fun animeDetailsRequest(anime: SAnime): Request =
-        GET(baseUrl + anime.url, headers)
-
-    override fun animeDetailsParse(response: Response): SAnime {
-        val doc = response.asJsoup()
-        return SAnime.create().apply {
-            title = doc.selectFirst("h1, h2, [class*='title']")?.text()?.trim() ?: ""
-            thumbnail_url = doc.selectFirst("meta[property=og:image]")?.attr("content")
-            description = doc.selectFirst("meta[property=og:description]")?.attr("content")
-            genre = doc.select("a[href*='/tags/']")
-                .mapNotNull { el -> el.text().trim().takeIf { it.isNotEmpty() } }
-                .joinToString()
-            status = SAnime.COMPLETED
-            initialized = true
-        }
-    }
-
-    // ===== Episode List =====
-    // Each video is standalone — one episode per anime. The slug is already in
-    // anime.url so we skip the HTTP request entirely to avoid OkHttp SSL issues.
-
-    override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
-        return listOf(
-            SEpisode.create().apply {
-                name = "Video"
-                episode_number = 1f
-                setUrlWithoutDomain(anime.url)
-            },
+    private fun extractVideoSource(slug: String): String {
+        val timestamp = System.currentTimeMillis() / 1000
+        val payload = mapOf(
+            "timestamp_unix" to timestamp,
+            "directive" to "htv_player_handshake",
+            "slug" to slug
         )
-    }
-
-    override fun episodeListRequest(anime: SAnime): Request = GET(baseUrl + anime.url)
-    override fun episodeListParse(response: Response): List<SEpisode> = emptyList()
-
-    // ===== Video List =====
-    // Load the video page in WebView, intercept the WASM-token-signed HLS URL,
-    // and return it with the session cookies needed for AES-128 key fetching.
-
-    override fun videoListRequest(episode: SEpisode) = GET(baseUrl + episode.url)
-
-    override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        val videoPageUrl = baseUrl + episode.url
-
-        val result = WebViewExtractor.extractHlsUrl(videoPageUrl)
-            ?: return emptyList()
-
-        // Build headers for the Video — these are used for both the m3u8 playlist
-        // request and the AES-128 sign.bin key fetch (ct.htv-services.com/sign.bin).
-        val videoHeaders = Headers.Builder()
-            .add(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
-            .add("Referer", "$baseUrl/")
-            .add("Origin", baseUrl)
-            .apply {
-                if (result.cookies.isNotEmpty()) add("Cookie", result.cookies)
-            }
+        val token = encryptInsecureMessage(payload)
+        val body = mapOf("token" to token)
+        val jsonBody = Json.encodeToString(body)
+        val request = Request.Builder()
+            .url("https://auth.hanime.tv/api/v11/handshake")
+            .post(jsonBody.toRequestBody("application/json".toMediaType()))
+            .header("x-signature-version", "web2")
+            .header("x-csrf-token", "null")
+            .header("x-time", timestamp.toString())
             .build()
 
-        return listOf(
-            Video(result.url, "HLS", result.url, headers = videoHeaders),
-        )
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) throw Exception("Handshake failed: ${response.code}")
+        val xToken = response.header("x-token") ?: throw Exception("Missing x-token")
+        response.close()
+
+        val decryptedJson = decryptInsecureMessage(xToken)
+        val json = Json.parseToJsonElement(decryptedJson).jsonObject
+        val sourcesArray = json["sources"]?.jsonArray ?: throw Exception("No sources in response")
+
+        val realSources = sourcesArray.filter {
+            it.jsonObject["kind"]?.jsonPrimitive?.content != "promotion"
+        }
+
+        if (realSources.isEmpty()) throw Exception("No playable sources found")
+
+        // Pick highest quality by height
+        val best = realSources.maxByOrNull {
+            it.jsonObject["height"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
+        } ?: throw Exception("No valid source")
+
+        return best.jsonObject["src"]?.jsonPrimitive?.content
+            ?: throw Exception("Missing src")
     }
 
-    override fun videoListParse(response: Response): List<Video> = emptyList()
+    // ========== Parsing Helper ==========
 
-    override fun List<Video>.sort(): List<Video> = this
-
-    override fun getFilterList() = AnimeFilterList()
-
-    // ===== Preferences =====
-
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        ListPreference(screen.context).apply {
-            key = PREF_QUALITY_KEY
-            title = "Preferred quality"
-            entries = QUALITY_LIST
-            entryValues = QUALITY_LIST
-            setDefaultValue(PREF_QUALITY_DEFAULT)
-            summary = "%s"
-            setOnPreferenceChangeListener { _, newValue ->
-                val index = findIndexOfValue(newValue as String)
-                preferences.edit().putString(key, entryValues[index] as String).commit()
-            }
-        }.also(screen::addPreference)
+    private fun parseSearchResults(doc: Document): List<SManga> {
+        // Search results are inside div.grid > div.w-full (each video card)
+        val cards = doc.select("div.grid div.w-full")
+        return cards.mapNotNull { card ->
+            try {
+                val link = card.selectFirst("a[href^=/videos/hentai/]")
+                    ?: return@mapNotNull null
+                val title = link.attr("title")
+                val cover = link.selectFirst("img")?.attr("src") ?: ""
+                val href = link.attr("href")
+                val slug = href.substringAfterLast("/")
+                SManga.create().apply {
+                    url = href
+                    title = title
+                    thumbnail_url = cover
+                    initialChapter = slug
+                }
+            } catch (_: Exception) { null }
+        }
     }
 
-    companion object {
-        private const val PAGE_SIZE = 24
-        const val PREF_QUALITY_KEY = "preferred_quality"
-        const val PREF_QUALITY_DEFAULT = "720p"
-        val QUALITY_LIST = arrayOf("720p", "480p", "360p")
+    // ========== Source Methods ==========
+
+    override fun getMangaList(page: Int): List<SManga> {
+        // Latest uploads: uses the search endpoint with order=created_at_desc
+        val url = "$baseUrl/search?order=created_at_desc&page=$page"
+        val doc = client.newCall(GET(url)).execute().use { response ->
+            Jsoup.parse(response.body!!.string())
+        }
+        return parseSearchResults(doc)
+    }
+
+    override fun getLatestUpdates(page: Int): List<SManga> {
+        // Reuse getMangaList for Latest
+        return getMangaList(page)
+    }
+
+    override fun getPopularManga(page: Int): List<SManga> {
+        // Trending page
+        val url = "$baseUrl/browse/trending?page=$page"
+        val doc = client.newCall(GET(url)).execute().use { response ->
+            Jsoup.parse(response.body!!.string())
+        }
+        return parseSearchResults(doc)
+    }
+
+    override fun searchManga(query: String, page: Int, filters: FilterList): List<SManga> {
+        val url = "$baseUrl/search?q=${query.replace(" ", "+")}&page=$page"
+        val doc = client.newCall(GET(url)).execute().use { response ->
+            Jsoup.parse(response.body!!.string())
+        }
+        return parseSearchResults(doc)
+    }
+
+    override fun getMangaDetails(manga: SManga): SManga {
+        // Optional: fetch extra details (synopsis, etc.) from video page
+        return manga
+    }
+
+    override fun getChapterList(manga: SManga): List<SChapter> {
+        val slug = manga.initialChapter ?: manga.url.substringAfterLast("/")
+        return listOf(SChapter.create().apply {
+            name = manga.title
+            url = manga.url
+            scanlator = slug // store slug for later use
+        })
+    }
+
+    override fun getPageList(chapter: SChapter): List<Page> {
+        val slug = chapter.scanlator ?: chapter.url.substringAfterLast("/")
+        val sourceUrl = extractVideoSource(slug)
+        return listOf(Page(0, "", sourceUrl))
+    }
+
+    override fun getFilterList(): FilterList {
+        // You can add filters (e.g., order, tags) later if needed
+        return FilterList()
     }
 }
