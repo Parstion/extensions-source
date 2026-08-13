@@ -17,7 +17,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
@@ -132,7 +131,6 @@ class Hanime : HttpSource() {
     // ========== Parsing Helper ==========
 
     private fun parseSearchResults(doc: Document): List<SManga> {
-        // Search results are inside div.grid > div.w-full (each video card)
         val cards = doc.select("div.grid div.w-full")
         return cards.mapNotNull { card ->
             try {
@@ -155,7 +153,6 @@ class Hanime : HttpSource() {
     // ========== Source Methods ==========
 
     override fun getMangaList(page: Int): List<SManga> {
-        // Latest uploads: uses the search endpoint with order=created_at_desc
         val url = "$baseUrl/search?order=created_at_desc&page=$page"
         val doc = client.newCall(GET(url)).execute().use { response ->
             Jsoup.parse(response.body!!.string())
@@ -164,12 +161,10 @@ class Hanime : HttpSource() {
     }
 
     override fun getLatestUpdates(page: Int): List<SManga> {
-        // Reuse getMangaList for Latest
         return getMangaList(page)
     }
 
     override fun getPopularManga(page: Int): List<SManga> {
-        // Trending page
         val url = "$baseUrl/browse/trending?page=$page"
         val doc = client.newCall(GET(url)).execute().use { response ->
             Jsoup.parse(response.body!!.string())
@@ -186,7 +181,6 @@ class Hanime : HttpSource() {
     }
 
     override fun getMangaDetails(manga: SManga): SManga {
-        // Optional: fetch extra details (synopsis, etc.) from video page
         return manga
     }
 
@@ -196,8 +190,8 @@ class Hanime : HttpSource() {
             SChapter.create().apply {
                 name = manga.title
                 url = manga.url
-                scanlator = slug // store slug for later use
-            }
+                scanlator = slug
+            },
         )
     }
 
@@ -208,7 +202,6 @@ class Hanime : HttpSource() {
     }
 
     override fun getFilterList(): FilterList {
-        // You can add filters (e.g., order, tags) later if needed
         return FilterList()
     }
 }
