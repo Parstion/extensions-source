@@ -1,4 +1,4 @@
-package eu.kanade.tachiyomi.animeextension.all.hanimetv
+package eu.kanade.tachiyomi.animeextension.en.hanime
 
 import android.util.Base64
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
