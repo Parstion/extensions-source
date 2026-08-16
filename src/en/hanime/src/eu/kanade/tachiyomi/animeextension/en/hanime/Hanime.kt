@@ -14,8 +14,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -97,7 +97,9 @@ class HanimeTv : AnimeHttpSource() {
         val query = response.request.tag(String::class.java).orEmpty()
         val catalog = parseCatalog(response)
 
-        val filtered = if (query.isBlank()) catalog else {
+        val filtered = if (query.isBlank()) {
+            catalog
+        } else {
             catalog.filter { it.searchTitles.contains(query, ignoreCase = true) }
         }
         val sorted = filtered.sortedByDescending { it.views }
@@ -197,7 +199,11 @@ class HanimeTv : AnimeHttpSource() {
         return parsed.sources
             .filter { it.src.isNotBlank() }
             .map { src ->
-                val videoUrl = if (src.src.startsWith("http")) src.src else baseUrl + src.src
+                val videoUrl = if (src.src.startsWith("http")) {
+                    src.src
+                } else {
+                    baseUrl + src.src
+                }
                 Video(videoUrl, src.label, videoUrl)
             }
     }
@@ -286,7 +292,7 @@ private object HtvCrypto {
     private const val KEY_SEED = "htv-insecure-handshake-v1"
     private const val AAD = "htv-insecure-v1"
 
-    private val secretKey: SecretKeySpec by lazy {
+    private val SECRET_KEY: SecretKeySpec by lazy {
         val digest = MessageDigest.getInstance("SHA-256").digest(KEY_SEED.toByteArray(Charsets.UTF_8))
         SecretKeySpec(digest, "AES")
     }
@@ -300,7 +306,7 @@ private object HtvCrypto {
     fun encrypt(plaintext: String): String {
         val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        cipher.init(Cipher.ENCRYPT_MODE, SECRET_KEY, GCMParameterSpec(128, iv))
         cipher.updateAAD(AAD.toByteArray(Charsets.UTF_8))
         val ciphertextAndTag = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
 
@@ -322,7 +328,7 @@ private object HtvCrypto {
         val data = b64UrlDecode(envelope.getValue("data").jsonPrimitive.content)
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        cipher.init(Cipher.DECRYPT_MODE, SECRET_KEY, GCMParameterSpec(128, iv))
         cipher.updateAAD(AAD.toByteArray(Charsets.UTF_8))
         val plaintext = cipher.doFinal(data + tag) // Java expects ciphertext+tag concatenated
         return String(plaintext, Charsets.UTF_8)
