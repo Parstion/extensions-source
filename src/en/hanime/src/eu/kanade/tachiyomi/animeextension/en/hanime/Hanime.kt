@@ -46,11 +46,13 @@ class Hanime : AnimeHttpSource() {
     // =====================================================================
 
     override fun popularAnimeRequest(page: Int): Request =
-        GET("$baseUrl/browse/trending?page=$page", headers)
+        GET("$baseUrl/browse/trending?page=$page", headers).newBuilder()
+            .tag(Int::class.javaObjectType, page)
+            .build()
 
     override fun popularAnimeParse(response: Response): AnimesPage {
         val document = response.asJsoup()
-        val page = response.request.tag(Int::class.java) ?: 1
+        val page = response.request.tag(Int::class.javaObjectType) ?: 1
 
         val animes = document.select("div.grid > div.relative").mapNotNull { card ->
             val link = card.selectFirst("a[href^=/videos/hentai/]") ?: return@mapNotNull null
@@ -74,10 +76,10 @@ class Hanime : AnimeHttpSource() {
     // =====================================================================
 
     override fun latestUpdatesRequest(page: Int): Request =
-        GET(catalogUrl, headers).newBuilder().tag(Int::class.java, page).build()
+        GET(catalogUrl, headers).newBuilder().tag(Int::class.javaObjectType, page).build()
 
     override fun latestUpdatesParse(response: Response): AnimesPage {
-        val page = response.request.tag(Int::class.java) ?: 1
+        val page = response.request.tag(Int::class.javaObjectType) ?: 1
         val sorted = parseCatalog(response).sortedByDescending { it.createdAtUnix }
         return paginate(sorted, page)
     }
@@ -88,12 +90,12 @@ class Hanime : AnimeHttpSource() {
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request =
         GET(catalogUrl, headers).newBuilder()
-            .tag(Int::class.java, page)
+            .tag(Int::class.javaObjectType, page)
             .tag(String::class.java, query)
             .build()
 
     override fun searchAnimeParse(response: Response): AnimesPage {
-        val page = response.request.tag(Int::class.java) ?: 1
+        val page = response.request.tag(Int::class.javaObjectType) ?: 1
         val query = response.request.tag(String::class.java).orEmpty()
         val catalog = parseCatalog(response)
 
