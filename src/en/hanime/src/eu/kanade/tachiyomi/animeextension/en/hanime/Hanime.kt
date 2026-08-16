@@ -25,7 +25,7 @@ import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class HanimeTv : AnimeHttpSource() {
+class Hanime : AnimeHttpSource() {
 
     override val name = "hanime.tv"
     override val baseUrl = "https://hanime.tv"
