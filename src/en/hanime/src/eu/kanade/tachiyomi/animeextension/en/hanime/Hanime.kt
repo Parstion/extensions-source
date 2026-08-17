@@ -206,7 +206,11 @@ class Hanime : AnimeHttpSource() {
             ?.state?.filter { it.state }?.map { it.name }
             ?: emptyList()
         val studioIndex = filters.filterIsInstance<StudioFilter>().firstOrNull()?.state ?: 0
-        val selectedStudio = if (studioIndex == 0) null else KNOWN_STUDIOS[studioIndex]
+        val selectedStudio = if (studioIndex == 0) {
+            null
+        } else {
+            KNOWN_STUDIOS[studioIndex]
+        }
 
         return GET(catalogUrl, headers).newBuilder()
             .tag(SearchTag::class.java, SearchTag(page, query, selectedTags, selectedStudio))
@@ -222,7 +226,9 @@ class Hanime : AnimeHttpSource() {
         val tag = response.request.tag(SearchTag::class.java) ?: SearchTag(1, "", emptyList(), null)
         val catalog = parseCatalog(response)
 
-        var filtered = if (tag.query.isBlank()) catalog else {
+        var filtered = if (tag.query.isBlank()) {
+            catalog
+        } else {
             catalog.filter { it.searchTitles.contains(tag.query, ignoreCase = true) }
         }
         if (tag.tags.isNotEmpty()) {
