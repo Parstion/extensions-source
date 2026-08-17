@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.animeextension.en.hanime
 
 import android.util.Base64
+import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
@@ -29,7 +30,7 @@ class Hanime : AnimeHttpSource() {
 
     override val name = "hanime.tv"
     override val baseUrl = "https://hanime.tv"
-    override val lang = "all"
+    override val lang = "en"
     override val supportsLatest = true
 
     private val authUrl = "https://auth.hanime.tv"
@@ -39,21 +40,122 @@ class Hanime : AnimeHttpSource() {
 
     companion object {
         private const val ITEMS_PER_PAGE = 24
+
+        // Confirmed directly from the real timespan-toggle links on /browse/trending -- note
+        // semi-annual and yearly do NOT match their display labels' obvious guesses.
+        private val TIMESPAN_LABELS = arrayOf("Monthly", "Daily", "Weekly", "Quarterly", "Semi-Annually", "Annually")
+        private val TIMESPAN_VALUES = arrayOf("monthly", "daily", "weekly", "quarterly", "semi-annual", "yearly")
+
+        private val KNOWN_TAGS = listOf(
+            "2000-year-old dragon girl", "3d", "ahegao", "anal",
+            "bdsm", "big boobs", "blow job", "bondage",
+            "boob job", "censored", "comedy", "cosplay",
+            "creampie", "dark skin", "facial", "fantasy",
+            "filmed", "foot job", "futanari", "gangbang",
+            "glasses", "hand job", "harem", "hd",
+            "horror", "incest", "inflation", "lactation",
+            "maid", "masturbation", "milf", "mind break",
+            "mind control", "monster", "nekomimi", "ntr",
+            "nurse", "orgy", "plot", "pov",
+            "pregnant", "public sex", "rimjob", "scat",
+            "school girl", "softcore", "swimsuit", "teacher",
+            "tentacle", "threesome", "toys", "trap",
+            "tsundere", "ugly bastard", "uncensored", "vanilla",
+            "virgin", "watersports", "x-ray", "yaoi",
+            "yuri",
+        )
+
+        private val KNOWN_STUDIOS = listOf(
+            "Any",
+            "@ OZ", "AIC", "APPP",
+            "Adult Source Media", "Ajia-Do", "Almond Collective",
+            "Alpha Polis", "Ameliatie", "Amour",
+            "Animac", "Anime Antenna Iinkai", "Antechinus",
+            "Arms", "BOMB! CUTE! BOMB!", "Bishop",
+            "Blue Eyes", "Bootleg", "BreakBottle",
+            "BugBug", "Bunnywalker", "Celeb",
+            "Central Park Media", "ChiChinoya", "Chocolat",
+            "ChuChu", "Circle Tribute", "CoCoans",
+            "Collaboration Works", "Comet", "Comic Media",
+            "Cosmos", "Cranberry", "Crimson",
+            "D3", "Daiei", "Digital Works",
+            "Discovery", "Dollhouse", "EBIMARU-DO",
+            "ECOLONUN", "Echo", "Edge",
+            "Erozuki", "FINAL FUCK 7", "Fanza",
+            "Five Ways", "Friends Media Station", "Front Line",
+            "Godoy", "Green Bunny", "Groover",
+            "Hoods Entertainment", "Hot Bear", "Hykobo",
+            "IRONBELL", "Ivory Tower", "J.C.",
+            "Jellyfish", "Jewel", "Juicy Mango",
+            "Jumondo", "KENZsoft", "King Bee",
+            "Kitty Media", "Knack", "KoaLa",
+            "Kuril", "L.", "Lemon Heart",
+            "Lilix", "Lune Pictures", "MS Pictures",
+            "Magic Bus", "Magin Label", "Majin Petit",
+            "Marigold", "Mary Jane", "Media Blasters",
+            "MediaBank", "Metro Notes", "MiMiA Cute",
+            "Milky", "Moon Rock", "Mousou Senka",
+            "Muse", "N43", "New Generation",
+            "Nihikime no Dozeu", "NuTech Digital", "Obtain Future",
+            "Otodeli", "Pashmina", "Passione",
+            "Pastel", "Peach Pie", "Pink Pineapple",
+            "Pinkbell", "Pix", "Pixy Soft",
+            "PoRO", "Pocomo Premium", "Project No.9",
+            "Queen Bee", "ROJIURA JACK", "Rabbit Gate",
+            "SELFISH", "SPEED", "STARGATE3D",
+            "SYLD", "Sakura Purin", "Schoolzone",
+            "Seven", "Shadow Prod. Co.", "Shelf",
+            "Shinyusha", "ShoSai", "Showten",
+            "Soft on Demand", "SoftCell", "Studio 9 Maiami",
+            "Studio Akai Shohosen", "Studio Deen", "Studio FOW",
+            "Studio Fantasia", "Studio Gokumi", "Studio Houkiboshi",
+            "Studio LEO", "Studio Zealot", "Suiseisha",
+            "SurviveMore", "Suzuki Mirano", "T-Rex",
+            "TDK Core", "TNK", "TOHO",
+            "TYS Work", "Toranoana", "Torudaya",
+            "Triangle", "Trimax", "Triple X",
+            "U-Jin", "Umemaro-3D", "Union Cho",
+            "Valkyria", "Vanilla", "White Bear",
+            "X City", "Y.O.U.C.", "ZIZ",
+            "Zyc", "demodemon", "evee",
+            "fruit", "gomasioken", "kate_sai",
+            "nur", "sakamotoJ", "seismic",
+            "studio GGB", "t japan", "yosino",
+        )
     }
+
+    // Small typed request-tag carriers -- avoids the Class<T>-as-map-key collisions you'd get
+    // from tagging multiple plain Int/String values on the same Request, and sidesteps the
+    // Int::class.java-vs-javaObjectType primitive/boxing gotcha entirely (see conversation).
+    private data class PageTag(val page: Int)
+    private data class SearchTag(val page: Int, val query: String, val tags: List<String>, val studio: String?)
+
+    class TimespanFilter : AnimeFilter.Select<String>("Timespan (browse only, ignores search text)", TIMESPAN_LABELS)
+    class TagCheckBox(tag: String) : AnimeFilter.CheckBox(tag)
+    class TagFilter : AnimeFilter.Group<TagCheckBox>("Tags (any match)", KNOWN_TAGS.map { TagCheckBox(it) })
+    class StudioFilter : AnimeFilter.Select<String>("Studio", KNOWN_STUDIOS.toTypedArray())
+
+    override fun getFilterList(): AnimeFilterList = AnimeFilterList(
+        TimespanFilter(),
+        TagFilter(),
+        StudioFilter(),
+    )
 
     // =====================================================================
     // Popular (trending) -- real HTML scrape, no auth/signing needed
     // =====================================================================
 
     override fun popularAnimeRequest(page: Int): Request =
-        GET("$baseUrl/browse/trending?page=$page", headers).newBuilder()
-            .tag(Int::class.javaObjectType, page)
+        GET("$baseUrl/browse/trending?timespan=monthly&page=$page", headers).newBuilder()
+            .tag(PageTag::class.java, PageTag(page))
             .build()
 
     override fun popularAnimeParse(response: Response): AnimesPage {
-        val document = response.asJsoup()
-        val page = response.request.tag(Int::class.javaObjectType) ?: 1
+        val page = response.request.tag(PageTag::class.java)?.page ?: 1
+        return parseTrendingDocument(response.asJsoup(), page)
+    }
 
+    private fun parseTrendingDocument(document: Document, page: Int): AnimesPage {
         val animes = document.select("div.grid > div.relative").mapNotNull { card ->
             val link = card.selectFirst("a[href^=/videos/hentai/]") ?: return@mapNotNull null
             val title = card.selectFirst("h3")?.text() ?: return@mapNotNull null
@@ -64,11 +166,10 @@ class Hanime : AnimeHttpSource() {
                 thumbnail_url = poster
             }
         }
-
-        val maxPage = document.selectFirst("input[type=number][max]")
-            ?.attr("max")?.toIntOrNull() ?: page
-
-        return AnimesPage(animes, page < maxPage)
+        // No reliable server-rendered total-page-count (the modal's `max` attribute turned out to
+        // be a stale placeholder, not real data -- see conversation). Just keep paginating until a
+        // page comes back empty, which is the standard fallback pattern for this situation.
+        return AnimesPage(animes, animes.isNotEmpty())
     }
 
     // =====================================================================
@@ -76,36 +177,63 @@ class Hanime : AnimeHttpSource() {
     // =====================================================================
 
     override fun latestUpdatesRequest(page: Int): Request =
-        GET(catalogUrl, headers).newBuilder().tag(Int::class.javaObjectType, page).build()
+        GET(catalogUrl, headers).newBuilder().tag(PageTag::class.java, PageTag(page)).build()
 
     override fun latestUpdatesParse(response: Response): AnimesPage {
-        val page = response.request.tag(Int::class.javaObjectType) ?: 1
+        val page = response.request.tag(PageTag::class.java)?.page ?: 1
         val sorted = parseCatalog(response).sortedByDescending { it.createdAtUnix }
         return paginate(sorted, page)
     }
 
     // =====================================================================
-    // Search -- local filter of the full catalog against search_titles
+    // Search -- either routes to the real trending scrape (if a non-default
+    // Timespan filter is chosen -- ignores query/tags/studio in that mode),
+    // or filters the local catalog by query + tags + studio (default mode).
     // =====================================================================
 
-    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request =
-        GET(catalogUrl, headers).newBuilder()
-            .tag(Int::class.javaObjectType, page)
-            .tag(String::class.java, query)
+    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
+        val timespanIndex = filters.filterIsInstance<TimespanFilter>().firstOrNull()?.state ?: 0
+
+        if (timespanIndex != 0) {
+            val timespanValue = TIMESPAN_VALUES[timespanIndex]
+            return GET("$baseUrl/browse/trending?timespan=$timespanValue&page=$page", headers)
+                .newBuilder()
+                .tag(PageTag::class.java, PageTag(page))
+                .build()
+        }
+
+        val selectedTags = filters.filterIsInstance<TagFilter>().firstOrNull()
+            ?.state?.filter { it.state }?.map { it.name }
+            ?: emptyList()
+        val studioIndex = filters.filterIsInstance<StudioFilter>().firstOrNull()?.state ?: 0
+        val selectedStudio = if (studioIndex == 0) null else KNOWN_STUDIOS[studioIndex]
+
+        return GET(catalogUrl, headers).newBuilder()
+            .tag(SearchTag::class.java, SearchTag(page, query, selectedTags, selectedStudio))
             .build()
+    }
 
     override fun searchAnimeParse(response: Response): AnimesPage {
-        val page = response.request.tag(Int::class.javaObjectType) ?: 1
-        val query = response.request.tag(String::class.java).orEmpty()
+        if (response.request.url.encodedPath.startsWith("/browse/trending")) {
+            val page = response.request.tag(PageTag::class.java)?.page ?: 1
+            return parseTrendingDocument(response.asJsoup(), page)
+        }
+
+        val tag = response.request.tag(SearchTag::class.java) ?: SearchTag(1, "", emptyList(), null)
         val catalog = parseCatalog(response)
 
-        val filtered = if (query.isBlank()) {
-            catalog
-        } else {
-            catalog.filter { it.searchTitles.contains(query, ignoreCase = true) }
+        var filtered = if (tag.query.isBlank()) catalog else {
+            catalog.filter { it.searchTitles.contains(tag.query, ignoreCase = true) }
         }
+        if (tag.tags.isNotEmpty()) {
+            filtered = filtered.filter { entry -> entry.tags.any { it in tag.tags } }
+        }
+        if (tag.studio != null) {
+            filtered = filtered.filter { it.brand == tag.studio }
+        }
+
         val sorted = filtered.sortedByDescending { it.views }
-        return paginate(sorted, page)
+        return paginate(sorted, tag.page)
     }
 
     private fun parseCatalog(response: Response): List<HanimeCatalogEntry> =
